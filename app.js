@@ -94,7 +94,7 @@ async function loadData() {
   return await r.json();
 }
 
-async function saveAll(items) {
+async function saveAll(items, depth = 0) {
   const c = cfg();
   if (c.mode === 'local') {
     const r = await fetch(c.apiBase, {
@@ -115,8 +115,9 @@ async function saveAll(items) {
     headers: { Authorization: `Bearer ${c.token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
-  if (r.status === 409) {            // 并发冲突：重新取 sha 重试
-    return saveAll(items);
+  if (r.status === 409) {            // 并发冲突：重新取 sha 重试（最多 3 次，防卡死）
+    if (depth >= 3) throw new Error('并发冲突，请稍后重试');
+    return saveAll(items, depth + 1);
   }
   if (!r.ok) {
     const e = await r.json().catch(() => ({}));
@@ -310,12 +311,11 @@ async function submitForm(e) {
   } else {
     DATA.unshift(entry);
   }
+  closeForm();
+  render();                              // 乐观更新：立即本地生效，不等网络
+  toast(editingId ? '已更新' : '已创建', 'ok');
   try {
-    await saveAll(DATA);
-    toast(editingId ? '已更新' : '已创建', 'ok');
-    closeForm();
-    DATA = await loadData();
-    render();
+    await saveAll(DATA);                 // 后台静默同步到 GitHub（慢也不卡 UI）
   } catch (err) {
     toast(err.message, 'err');
   }
@@ -324,13 +324,14 @@ async function submitForm(e) {
 async function removeInsp(id) {
   if (!confirm('确定删除这条灵感？此操作公开且不可恢复。')) return;
   if (!(await ensureToken('删除'))) return;
+  const backup = DATA;
   DATA = DATA.filter(x => x.id !== id);
+  render();                              // 乐观更新：立即本地移除，不等网络
+  toast('已删除', 'ok');
   try {
-    await saveAll(DATA);
-    toast('已删除', 'ok');
-    DATA = await loadData();
-    render();
+    await saveAll(DATA);                 // 后台静默同步到 GitHub（慢也不卡 UI）
   } catch (err) {
+    DATA = backup; render();             // 同步失败则回滚
     toast(err.message, 'err');
   }
 }
