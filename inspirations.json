@@ -1,25 +1,14 @@
 [
   {
-    "id": "1",
-    "title": "写完季度报告",
-    "content": "写完季度报告",
-    "images": [],
-    "tags": [],
-    "category": "任务",
-    "author": "测试",
-    "created_at": "2026-07-13T22:00:33.000Z",
-    "updated_at": "2026-07-13T22:00:33.000Z"
-  },
-  {
-    "id": "3",
+    "id": "2",
     "title": "喝水",
     "content": "喝水",
     "images": [],
     "tags": [],
     "category": "灵感",
-    "author": "邓若愚",
-    "created_at": "2026-07-14T13:33:04.000Z",
-    "updated_at": "2026-07-14T13:33:04.000Z"
+    "author": "测试",
+    "created_at": "2026-07-13T22:00:33.000Z",
+    "updated_at": "2026-07-13T22:00:33.000Z"
   },
   {
     "id": "4",
