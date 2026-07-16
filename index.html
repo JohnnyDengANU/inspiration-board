@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>灵感板 · 公开灵感收集与展示</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💡</text></svg>" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">💡</span>
+      <div>
+        <h1>灵感板</h1>
+        <p class="sub">完全公开的灵感收集与展示</p>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="btnNew" class="btn primary">＋ 新建灵感</button>
+      <button id="btnSettings" class="btn ghost" aria-label="设置">⚙</button>
+    </div>
+  </header>
+
+  <div id="readonlyBanner" class="banner hidden">
+    当前为 <b>公开只读</b> 模式（无需登录即可浏览全部灵感）。如需创建 / 编辑 / 删除，请在
+    <b>⚙ 设置</b> 中填写你的 GitHub Token（仅保存在你本机浏览器）。
+  </div>
+
+  <section class="filters">
+    <input id="search" class="search" type="search" placeholder="搜索标题 / 内容 / 作者…" />
+    <select id="categoryFilter" class="select">
+      <option value="">全部分类</option>
+    </select>
+    <div id="tagFilter" class="tag-filter"></div>
+  </section>
+
+  <main>
+    <div id="list" class="grid"></div>
+    <p id="empty" class="empty hidden">没有匹配的灵感，换个筛选条件试试。</p>
+  </main>
+
+  <!-- 新建 / 编辑 弹窗 -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2 id="modalTitle">新建灵感</h2>
+        <button id="modalClose" class="icon-btn" aria-label="关闭">✕</button>
+      </div>
+      <form id="form" class="form">
+        <label>标题
+          <input id="f-title" type="text" maxlength="120" required placeholder="一句话灵感" />
+        </label>
+        <label>内容
+          <textarea id="f-content" rows="4" placeholder="展开说说（支持多行）"></textarea>
+        </label>
+        <label>图片（可多个：填图片链接，或选择本地图片转 base64）
+          <div id="imgList" class="img-list"></div>
+          <div class="img-add">
+            <input id="f-img-url" type="url" placeholder="https://… 图片链接" />
+            <button type="button" id="addUrl" class="btn small">加链接</button>
+            <label class="btn small file">选本地图
+              <input id="f-img-file" type="file" accept="image/*" multiple hidden />
+            </label>
+          </div>
+        </label>
+        <div class="row">
+          <label>标签（逗号分隔）
+            <input id="f-tags" type="text" placeholder="AI, 产品, 方法论" />
+          </label>
+          <label>分类
+            <input id="f-category" type="text" list="catList" placeholder="工作 / 生活 / 团队" />
+            <datalist id="catList"></datalist>
+          </label>
+        </div>
+        <label>作者（公开显示）
+          <input id="f-author" type="text" maxlength="40" placeholder="匿名" />
+        </label>
+        <div class="form-actions">
+          <button type="button" id="formCancel" class="btn ghost">取消</button>
+          <button type="submit" class="btn primary">保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 设置抽屉 -->
+  <div id="settings" class="drawer hidden">
+    <div class="drawer-card">
+      <div class="modal-head">
+        <h2>设置</h2>
+        <button id="settingsClose" class="icon-btn" aria-label="关闭">✕</button>
+      </div>
+      <p class="hint">数据完全公开，任何人都能通过公开链接 / API 读取。写入（增删改）需要你自己的 GitHub Token，仅保存在本机浏览器，不会上传到任何服务器。</p>
+      <label>模式
+        <select id="s-mode" class="select">
+          <option value="github">GitHub 公开仓库（Pages）</option>
+          <option value="local">本地 / 自托管服务（/api/inspirations）</option>
+        </select>
+      </label>
+      <div id="githubFields">
+        <label>GitHub 用户名（owner）
+          <input id="s-owner" type="text" placeholder="your-username" />
+        </label>
+        <label>仓库名（公开）
+          <input id="s-repo" type="text" placeholder="inspiration-board" />
+        </label>
+        <label>分支
+          <input id="s-branch" type="text" placeholder="main" />
+        </label>
+        <label>GitHub Token（仅用于写入，存本机）
+          <input id="s-token" type="password" placeholder="ghp_xxx（需要 repo 权限）" />
+        </label>
+      </div>
+      <div id="localFields" class="hidden">
+        <label>API 地址
+          <input id="s-apibase" type="text" placeholder="/api/inspirations" />
+        </label>
+      </div>
+      <div class="form-actions">
+        <button id="settingsReset" class="btn ghost">恢复默认</button>
+        <button id="settingsSave" class="btn primary">保存设置</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
