@@ -23,8 +23,8 @@
   </header>
 
   <div id="readonlyBanner" class="banner hidden">
-    当前为 <b>公开只读</b> 模式（无需登录即可浏览全部灵感）。如需创建 / 编辑 / 删除，请在
-    <b>⚙ 设置</b> 中填写你的 GitHub Token（仅保存在你本机浏览器）。
+    当前为 <b>公开只读</b> 模式（无需登录即可浏览全部灵感）。创建 / 编辑 / 删除时，会让你输入一次 GitHub Token（仅保存在你本机浏览器，之后自动记住）；也可在
+    <b>⚙ 设置</b> 中预先填写完整配置。
   </div>
 
   <section class="filters">
@@ -120,6 +120,25 @@
       <div class="form-actions">
         <button id="settingsReset" class="btn ghost">恢复默认</button>
         <button id="settingsSave" class="btn primary">保存设置</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 写入 Token 临时弹窗（删除/编辑/新建时若未填则一键补） -->
+  <div id="tokenModal" class="modal hidden">
+    <div class="modal-card small-card">
+      <div class="modal-head">
+        <h2>需要 GitHub Token</h2>
+        <button id="tokenClose" class="icon-btn" aria-label="关闭">✕</button>
+      </div>
+      <p class="hint">公开数据无需登录即可浏览；但你正在进行的<b id="tokenActionLabel">写入</b>操作需要你自己的 GitHub Token（仅需 <b>repo</b> 权限）。它会<b>仅保存在你本机浏览器</b>，不会上传，填一次后自动记住。</p>
+      <label>GitHub Token
+        <input id="t-token" type="password" placeholder="ghp_xxx（需要 repo 权限）" />
+      </label>
+      <div class="form-actions">
+        <button id="tokenToSettings" class="btn ghost">完整设置</button>
+        <button id="tokenCancel" class="btn ghost">取消</button>
+        <button id="tokenSave" class="btn primary">保存并继续</button>
       </div>
     </div>
   </div>

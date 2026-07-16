@@ -211,6 +211,9 @@ body {
 
 .hidden { display: none !important; }
 
+/* 写入 Token 临时弹窗（窄） */
+.small-card { max-width: 440px; }
+
 /* 移动端 */
 @media (max-width: 600px) {
   .topbar { padding: 12px 14px; }

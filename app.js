@@ -216,6 +216,50 @@ function esc(s) {
   return String(s).replace(/[&<>"]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m]));
 }
 
+/* ---------- 写入 Token 临时弹窗（删/改/增时若未填则一键补） ---------- */
+let pendingTokenResolve = null;
+function openTokenModal(actionLabel) {
+  document.getElementById('tokenActionLabel').textContent = actionLabel || '写入';
+  const inp = document.getElementById('t-token');
+  inp.value = '';
+  document.getElementById('tokenModal').classList.remove('hidden');
+  inp.focus();
+}
+function closeTokenModal() {
+  document.getElementById('tokenModal').classList.add('hidden');
+}
+// 返回 Promise<boolean>：已具备写入条件（或无需 token）则立即 true；否则弹窗等用户输入。
+function ensureToken(actionLabel) {
+  const c = cfg();
+  if (c.mode !== 'github') return Promise.resolve(true);
+  if (c.token && c.owner && c.repo) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    pendingTokenResolve = resolve;
+    openTokenModal(actionLabel);
+  });
+}
+function bindTokenModal() {
+  const finish = (ok) => {
+    closeTokenModal();
+    const r = pendingTokenResolve; pendingTokenResolve = null;
+    if (r) r(!!ok);
+  };
+  document.getElementById('tokenSave').onclick = () => {
+    const t = document.getElementById('t-token').value.trim();
+    if (!t) { toast('请填写 Token', 'err'); return; }
+    const c = cfg();
+    c.token = t;
+    saveCfg(c);
+    finish(true);
+  };
+  document.getElementById('tokenCancel').onclick = () => finish(false);
+  document.getElementById('tokenClose').onclick = () => finish(false);
+  document.getElementById('tokenToSettings').onclick = () => { finish(false); openSettings(); };
+  document.getElementById('tokenModal').onclick = (e) => {
+    if (e.target.id === 'tokenModal') finish(false);
+  };
+}
+
 /* ---------- 弹窗表单 ---------- */
 function openForm(id) {
   editingId = id || null;
@@ -245,8 +289,7 @@ function renderImgList() {
 
 async function submitForm(e) {
   e.preventDefault();
-  const c = cfg();
-  if (c.mode === 'github' && !c.token) { toast('请先在 ⚙ 设置填写 GitHub Token 再写入', 'err'); return; }
+  if (!(await ensureToken(editingId ? '更新' : '创建'))) return;
   const now = new Date().toISOString();
   const title = document.getElementById('f-title').value.trim();
   if (!title) { toast('标题不能为空', 'err'); return; }
@@ -280,8 +323,7 @@ async function submitForm(e) {
 
 async function removeInsp(id) {
   if (!confirm('确定删除这条灵感？此操作公开且不可恢复。')) return;
-  const c = cfg();
-  if (c.mode === 'github' && !c.token) { toast('请先在 ⚙ 设置填写 GitHub Token 再写入', 'err'); return; }
+  if (!(await ensureToken('删除'))) return;
   DATA = DATA.filter(x => x.id !== id);
   try {
     await saveAll(DATA);
@@ -341,6 +383,7 @@ async function init() {
 /* ---------- 事件绑定 ---------- */
 document.getElementById('btnNew').onclick = () => openForm(null);
 document.getElementById('btnSettings').onclick = openSettings;
+bindTokenModal();
 document.getElementById('modalClose').onclick = closeForm;
 document.getElementById('formCancel').onclick = closeForm;
 document.getElementById('form').onsubmit = submitForm;
