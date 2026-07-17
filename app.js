@@ -4,7 +4,20 @@
  *  - github：公开仓库 JSON。读 = raw/API（无 Token 即可，满足公开访问）；
  *            写 = GitHub Contents API（需你自己的 Token，仅存本机浏览器）。
  *  - local ：自托管 Node 服务 /api/inspirations（公开读写）。
+ *
+ * 新增能力（2026-07-17）：
+ *  1) 批量删除（多选 + 确认）           —— 见 toggleSelectMode / batchDelete
+ *  2) 自适应润色（按内容粗糙度自动调力度）—— 见 evaluateRoughness / polishText
+ *  3) 语音输入（Web Speech API）        —— 见 initVoice / toggleMic
+ *  4) 自动凝练标题（按内容生成简洁标题）—— 见 genTitle
+ *  5) 同步休眠保护（sync-guard）         —— 见 beginSyncLock / endSyncLock
+ *     说明：写操作后禁用"写入类"按钮并显示倒计时横幅，等待远端同步完成。
+ *     默认锁定时长 SYNC_LOCK_MS=8000（8 秒，已覆盖 GitHub API 写入 + CDN 刷新缓冲）。
+ *     若确实想"休眠一分钟"，把下面常量改为 60000 即可。
  * ============================================================ */
+
+// —— 同步休眠时长（毫秒）。如需严格 60 秒，改为 60000 ——
+const SYNC_LOCK_MS = 8000;
 
 const STORE_KEY = 'insp_config';
 const DEFAULTS = {
@@ -20,8 +33,6 @@ function cfg() {
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(STORE_KEY)) || {}; } catch (e) {}
   const c = Object.assign({}, DEFAULTS, saved);
-  // 本地预览（localhost）自动用 local 模式，直连 /api/inspirations；
-  // 真实部署到 *.github.io 时则用 github 模式（公开读取 + Token 写入）。
   if (!localStorage.getItem(STORE_KEY) && /localhost|127\.0\.0\.1/.test(location.hostname)) {
     c.mode = 'local';
   }
@@ -38,7 +49,7 @@ function el(tag, props = {}, children = []) {
     else if (k === 'html') n.innerHTML = props[k];
     else if (k.startsWith('on') && typeof props[k] === 'function') n.addEventListener(k.slice(2), props[k]);
     else if (k === 'dataset') Object.assign(n.dataset, props[k]);
-    else n.setAttribute(k, props[k]);
+    else if (props[k] != null) n.setAttribute(k, props[k]);
   }
   (Array.isArray(children) ? children : [children]).forEach(c => {
     if (c == null) return;
@@ -75,10 +86,8 @@ async function loadData() {
     if (!r.ok) throw new Error('本地 API 读取失败：' + r.status);
     return await r.json();
   }
-  // github 模式
   if (!c.owner || !c.repo) throw new Error('请在 ⚙ 设置中填写 GitHub 用户名与仓库名');
   if (c.token) {
-    // 已登录：走 Contents API（实时、权威）
     const url = `https://api.github.com/repos/${c.owner}/${c.repo}/contents/inspirations.json?ref=${c.branch}`;
     const r = await fetch(url, { headers: { Authorization: `Bearer ${c.token}`, Accept: 'application/vnd.github+json' } });
     if (r.status === 404) return [];
@@ -86,8 +95,6 @@ async function loadData() {
     const j = await r.json();
     return JSON.parse(b64decodeUtf8(j.content));
   }
-  // 公开只读：raw 链接，无需 Token（满足公开访问）
-  // 加 cache-buster (?t) 绕过 CDN 陈旧缓存，保证每次刷新拿到真实最新文件（修复「刷新数量忽多忽少」）
   const url = `https://raw.githubusercontent.com/${c.owner}/${c.repo}/${c.branch}/inspirations.json?t=${Date.now()}`;
   const r = await fetch(url, { cache: 'no-store' });
   if (r.status === 404) return [];
@@ -116,7 +123,7 @@ async function saveAll(items, depth = 0) {
     headers: { Authorization: `Bearer ${c.token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
-  if (r.status === 409) {            // 并发冲突：重新取 sha 重试（最多 3 次，防卡死）
+  if (r.status === 409) {
     if (depth >= 3) throw new Error('并发冲突，请稍后重试');
     return saveAll(items, depth + 1);
   }
@@ -133,8 +140,6 @@ async function getSha(c) {
   return (await r.json()).sha;
 }
 
-// 写操作：基于「远端最新全量」合并后再提交，避免用前端陈旧 DATA 覆盖他人改动导致数据丢失。
-// mergeFn(latest) -> next（在最新全量上应用本次增量）。有 token 时 loadData 走 api(实时)，公开只读走 raw(no-cache)。
 async function pushMerged(mergeFn) {
   const latest = await loadData();
   const next = mergeFn(latest);
@@ -147,6 +152,55 @@ let DATA = [];
 let editingId = null;
 let formImages = [];
 let activeTag = null;
+let selectMode = false;
+let selectedIds = new Set();
+
+/* ---------- 同步休眠保护（sync-guard） ---------- */
+let syncing = false;
+let syncTimer = null;
+let syncTick = null;
+let syncEndAt = 0;
+function updateSyncBanner() {
+  const b = document.getElementById('syncBanner');
+  if (!b) return;
+  const left = Math.max(0, Math.ceil((syncEndAt - Date.now()) / 1000));
+  b.textContent = `同步中，请稍候（约 ${left} 秒）…`;
+  if (left <= 0 && syncTick) { clearInterval(syncTick); syncTick = null; }
+}
+function refreshSyncUI() {
+  document.body.classList.toggle('syncing', syncing);
+  const banner = document.getElementById('syncBanner');
+  if (banner) banner.classList.toggle('hidden', !syncing);
+  const setDis = (id, on) => { const e = document.getElementById(id); if (e) e.disabled = on; };
+  setDis('btnNew', syncing);
+  setDis('btnBatch', syncing);
+  setDis('btnSettings', syncing);
+  setDis('batchAll', syncing);
+  setDis('batchDelete', syncing || selectedIds.size === 0);
+  setDis('batchCancel', syncing);
+  const submit = document.querySelector('#form button[type=submit]');
+  if (submit) submit.disabled = syncing;
+  if (syncing && syncTick) updateSyncBanner();
+}
+function beginSyncLock() {
+  syncing = true;
+  if (syncTimer) clearTimeout(syncTimer);
+  if (syncTick) clearInterval(syncTick);
+  syncEndAt = Date.now() + SYNC_LOCK_MS;
+  syncTick = setInterval(updateSyncBanner, 400);
+  updateSyncBanner();
+  refreshSyncUI();
+  render(); // 让已有卡片的编辑/删除按钮反映禁用态
+}
+function endSyncLock() {
+  if (syncTimer) clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => {
+    syncing = false;
+    if (syncTick) { clearInterval(syncTick); syncTick = null; }
+    refreshSyncUI();
+    render();
+  }, SYNC_LOCK_MS);
+}
 
 /* ---------- 渲染 ---------- */
 function categories() {
@@ -175,13 +229,11 @@ function render() {
   const empty = document.getElementById('empty');
   list.innerHTML = '';
 
-  // 分类下拉
   const catSel = document.getElementById('categoryFilter');
   const cur = catSel.value;
   catSel.innerHTML = '<option value="">全部分类</option>' + categories().map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
   catSel.value = cur;
 
-  // 标签 chips
   const tagBox = document.getElementById('tagFilter');
   tagBox.innerHTML = '';
   allTags().forEach(t => {
@@ -203,7 +255,8 @@ function render() {
       d.category ? el('span', { class: 'cat', text: d.category }) : null,
       ...(d.tags || []).map(t => el('span', { class: 'tag', text: '#' + t, onclick: () => { activeTag = t; render(); } }))
     ]);
-    const card = el('div', { class: 'card' }, [
+
+    const kids = [
       el('div', { class: 'no' }, [
         el('span', { text: 'No.' + (i + 1) }),
         el('span', { class: 'id', text: '#' + d.id })
@@ -211,23 +264,44 @@ function render() {
       el('h3', { text: d.title || '（无标题）' }),
       d.content ? el('div', { class: 'content', text: d.content }) : null,
       (d.images && d.images.length) ? imgs : null,
-      meta,
-      el('div', { class: 'foot' }, [
+      meta
+    ];
+
+    if (selectMode) {
+      const cb = el('input', { type: 'checkbox', class: 'pickbox' });
+      cb.checked = selectedIds.has(d.id);
+      cb.addEventListener('change', (e) => toggleSelect(d.id, e.target.checked));
+      kids.unshift(el('label', { class: 'pick' }, [cb]));
+      kids.push(el('div', { class: 'foot' }, [
+        el('span', { text: (d.author || '匿名') + ' · ' + fmtTime(d.updated_at || d.created_at) })
+      ]));
+    } else {
+      const editBtn = el('button', { class: 'mini', text: '编辑', onclick: () => openForm(d.id) });
+      const delBtn = el('button', { class: 'mini danger', text: '删除', onclick: () => removeInsp(d.id) });
+      if (syncing) { editBtn.disabled = true; delBtn.disabled = true; }
+      kids.push(el('div', { class: 'foot' }, [
         el('span', { text: (d.author || '匿名') + ' · ' + fmtTime(d.updated_at || d.created_at) }),
-        el('div', { class: 'ops' }, [
-          el('button', { class: 'mini', text: '编辑', onclick: () => openForm(d.id) }),
-          el('button', { class: 'mini danger', text: '删除', onclick: () => removeInsp(d.id) })
-        ])
-      ])
-    ]);
+        el('div', { class: 'ops' }, [editBtn, delBtn])
+      ]));
+    }
+
+    const card = el('div', { class: 'card' + (selectMode ? ' selecting' : '') }, kids);
     list.appendChild(card);
   });
+
+  updateBatchCount();
 }
 function esc(s) {
   return String(s).replace(/[&<>"]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m]));
 }
+function updateBatchCount() {
+  const c = document.getElementById('batchCount');
+  if (c) c.textContent = `已选 ${selectedIds.size} 项`;
+  const bd = document.getElementById('batchDelete');
+  if (bd) bd.disabled = selectedIds.size === 0 || syncing;
+}
 
-/* ---------- 写入 Token 临时弹窗（删/改/增时若未填则一键补） ---------- */
+/* ---------- 写入 Token 临时弹窗 ---------- */
 let pendingTokenResolve = null;
 function openTokenModal(actionLabel) {
   document.getElementById('tokenActionLabel').textContent = actionLabel || '写入';
@@ -239,7 +313,6 @@ function openTokenModal(actionLabel) {
 function closeTokenModal() {
   document.getElementById('tokenModal').classList.add('hidden');
 }
-// 返回 Promise<boolean>：已具备写入条件（或无需 token）则立即 true；否则弹窗等用户输入。
 function ensureToken(actionLabel) {
   const c = cfg();
   if (c.mode !== 'github') return Promise.resolve(true);
@@ -281,11 +354,17 @@ function openForm(id) {
   document.getElementById('f-tags').value = d ? (d.tags || []).join(', ') : '';
   document.getElementById('f-category').value = d ? (d.category || '') : '';
   document.getElementById('f-author').value = d ? (d.author || '匿名') : '匿名';
+  const ap = document.getElementById('f-autopolish');
+  if (ap) ap.checked = false;
   formImages = d ? [...(d.images || [])] : [];
   renderImgList();
   document.getElementById('modal').classList.remove('hidden');
 }
-function closeForm() { document.getElementById('modal').classList.add('hidden'); editingId = null; }
+function closeForm() {
+  document.getElementById('modal').classList.add('hidden');
+  editingId = null;
+  if (recog && micOn) { try { recog.stop(); } catch (e) {} }
+}
 
 function renderImgList() {
   const box = document.getElementById('imgList');
@@ -300,14 +379,28 @@ function renderImgList() {
 
 async function submitForm(e) {
   e.preventDefault();
+  if (syncing) { toast('同步中，请稍候', 'err'); return; }
   if (!(await ensureToken(editingId ? '更新' : '创建'))) return;
+
+  // 保存时自动润色（若勾选）
+  const ta = document.getElementById('f-content');
+  const ap = document.getElementById('f-autopolish');
+  if (ap && ap.checked) {
+    const r = polishText(ta.value);
+    ta.value = r.text;
+  }
+
+  let title = document.getElementById('f-title').value.trim();
+  if (!title) {                              // 标题为空 → 自动凝练标题（语音直录场景）
+    title = genTitle(ta.value);
+    if (!title) { toast('标题不能为空', 'err'); return; }
+    toast('已根据内容自动生成标题', 'ok');
+  }
   const now = new Date().toISOString();
-  const title = document.getElementById('f-title').value.trim();
-  if (!title) { toast('标题不能为空', 'err'); return; }
   const entry = {
     id: editingId || String(Date.now()),
     title,
-    content: document.getElementById('f-content').value.trim(),
+    content: ta.value.trim(),
     images: [...formImages],
     tags: document.getElementById('f-tags').value.split(',').map(s => s.trim()).filter(Boolean),
     category: document.getElementById('f-category').value.trim(),
@@ -322,10 +415,10 @@ async function submitForm(e) {
     DATA.unshift(entry);
   }
   closeForm();
-  render();                              // 乐观更新：立即本地生效，不等网络
+  render();
   toast(editingId ? '已更新' : '已创建', 'ok');
+  beginSyncLock();
   try {
-    // 基于远端最新全量合并后提交，避免用陈旧前端数据覆盖导致丢失他人条目
     await pushMerged(latest => {
       const i = latest.findIndex(x => x.id === entry.id);
       if (i >= 0) latest[i] = entry; else latest.unshift(entry);
@@ -334,6 +427,7 @@ async function submitForm(e) {
   } catch (err) {
     toast(err.message, 'err');
   }
+  endSyncLock();
 }
 
 async function removeInsp(id) {
@@ -341,15 +435,149 @@ async function removeInsp(id) {
   if (!(await ensureToken('删除'))) return;
   const backup = DATA;
   DATA = DATA.filter(x => x.id !== id);
-  render();                              // 乐观更新：立即本地移除，不等网络
+  render();
   toast('已删除', 'ok');
+  beginSyncLock();
   try {
-    // 基于远端最新全量移除该 id 后提交（保留他人同时的改动，不丢数据）
     await pushMerged(latest => latest.filter(x => x.id !== id));
   } catch (err) {
-    DATA = backup; render();             // 同步失败则回滚
+    DATA = backup; render();
     toast(err.message, 'err');
   }
+  endSyncLock();
+}
+
+/* ---------- 批量删除 ---------- */
+function toggleSelectMode() {
+  selectMode = !selectMode;
+  if (!selectMode) selectedIds.clear();
+  document.getElementById('btnBatch').classList.toggle('active', selectMode);
+  document.getElementById('batchBar').classList.toggle('hidden', !selectMode);
+  const ball = document.getElementById('batchAll');
+  if (ball) ball.checked = false;
+  render();
+}
+function toggleSelect(id, checked) {
+  if (checked) selectedIds.add(id); else selectedIds.delete(id);
+  updateBatchCount();
+}
+async function batchDelete() {
+  if (syncing) { toast('同步中，请稍候', 'err'); return; }
+  if (selectedIds.size === 0) { toast('未选择任何灵感', 'err'); return; }
+  if (!confirm(`确定删除选中的 ${selectedIds.size} 条灵感？此操作公开且不可恢复。`)) return;
+  if (!(await ensureToken('批量删除'))) return;
+  const ids = new Set(selectedIds);
+  const backup = DATA;
+  DATA = DATA.filter(x => !ids.has(x.id));
+  selectedIds.clear();
+  render();
+  toast('已删除选中', 'ok');
+  beginSyncLock();
+  try {
+    await pushMerged(latest => latest.filter(x => !ids.has(x.id)));
+  } catch (err) {
+    DATA = backup; render();
+    toast(err.message, 'err');
+  }
+  endSyncLock();
+}
+
+/* ---------- 自适应润色 ---------- */
+function evaluateRoughness(t) {
+  let score = 0;
+  if (/[ \t]{2,}/.test(t)) score += 1;          // 多空格
+  if (/[，。！？!?]{2,}/.test(t)) score += 1;     // 重复标点
+  if (/[，。！？]\s*[，。！？]/ .test(t)) score += 1; // 中英文标点混排
+  if (/(.)\1{3,}/.test(t)) score += 1;          // 重复字符
+  if (t.length > 120) score += 1;               // 长文本
+  if (/\n{3,}/.test(t)) score += 1;             // 多余空行
+  if (/[a-zA-Z],[a-zA-Z]/.test(t)) score += 1;  // 英文逗号后无空格（粗糙）
+  return score;
+}
+// 返回 {text, level:'light'|'medium'|'strong'}
+function polishText(raw) {
+  let t = (raw || '').replace(/\r\n/g, '\n').trim();
+  const score = evaluateRoughness(t);
+  const level = score <= 1 ? 'light' : score <= 3 ? 'medium' : 'strong';
+  // 轻度：规整空白
+  t = t.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').replace(/[ \t]+\n/g, '\n');
+  if (level !== 'light') {
+    // 中度：中文语境下的 ASCII 标点转中文标点（避开小数 3.14）
+    t = t.replace(/([一-鿿]),/g, '$1，')
+         .replace(/([一-鿿])\.(?!\d|\.)/g, '$1。')
+         .replace(/([一-鿿])\!(?!\=)/g, '$1！')
+         .replace(/([一-鿿])\?(?!\=)/g, '$1？')
+         .replace(/([一-鿿])\:/g, '$1：')
+         .replace(/([一-鿿])\;/g, '$1；');
+  }
+  if (level === 'strong') {
+    // 深度：折叠重复句末标点、去除连续重复行
+    t = t.replace(/([。！？!?]){2,}/g, '$1');
+    t = t.replace(/(.{2,})\n\1(\n|$)/g, '$1$2');
+  }
+  return { text: t, level };
+}
+function doPolish() {
+  const ta = document.getElementById('f-content');
+  const { text, level } = polishText(ta.value);
+  ta.value = text;
+  const name = { light: '轻度', medium: '中度', strong: '深度' }[level];
+  toast('已润色（' + name + '）', 'ok');
+}
+
+/* ---------- 自动凝练标题 ---------- */
+function genTitle(content) {
+  const c = (content || '').trim();
+  if (!c) return '';
+  const m = c.match(/^(标题|主题|题目)\s*[:：]\s*(.+)$/m);
+  if (m) return m[2].trim().slice(0, 40);
+  const first = c.split(/[。！？!?\n]/)[0].trim();
+  let title = first.length > 24 ? first.slice(0, 24) + '…' : first;
+  if (!title) title = c.slice(0, 24);
+  return title;
+}
+function genTitleFromContent() {
+  const c = document.getElementById('f-content').value;
+  const t = genTitle(c);
+  if (!t) { toast('请先输入内容', 'err'); return; }
+  document.getElementById('f-title').value = t;
+  toast('已生成标题', 'ok');
+}
+
+/* ---------- 语音输入（Web Speech API） ---------- */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recog = null, micOn = false, voiceFinal = '';
+function initVoice() {
+  const mic = document.getElementById('btnMic');
+  if (!mic) return;
+  if (!SR) { mic.style.display = 'none'; return; }
+  recog = new SR();
+  recog.lang = 'zh-CN';
+  recog.continuous = true;
+  recog.interimResults = true;
+  recog.onresult = (e) => {
+    let interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const r = e.results[i];
+      if (r.isFinal) voiceFinal += r[0].transcript; else interim += r[0].transcript;
+    }
+    const ta = document.getElementById('f-content');
+    if (ta) ta.value = voiceFinal + interim;
+  };
+  recog.onend = () => { micOn = false; mic.classList.remove('rec'); };
+  recog.onerror = (e) => {
+    micOn = false; mic.classList.remove('rec');
+    toast('语音识别：' + (e.error || '失败'), 'err');
+  };
+}
+function toggleMic() {
+  const mic = document.getElementById('btnMic');
+  if (!recog) return;
+  const ta = document.getElementById('f-content');
+  if (micOn) { try { recog.stop(); } catch (x) {} return; }
+  voiceFinal = ta ? ta.value : '';
+  try { recog.start(); micOn = true; mic.classList.add('rec'); }
+  catch (x) { toast('无法启动语音识别', 'err'); }
 }
 
 /* ---------- 设置抽屉 ---------- */
@@ -388,7 +616,6 @@ function saveSettings() {
 async function init() {
   const c = cfg();
   document.getElementById('readonlyBanner').classList.toggle('hidden', !(c.mode === 'github' && !c.token));
-  // 先渲染上次成功缓存，保证数量即时、稳定、不闪空/不闪变
   try {
     const cached = JSON.parse(localStorage.getItem('insp_cache') || 'null');
     if (Array.isArray(cached)) { DATA = cached; render(); }
@@ -398,13 +625,26 @@ async function init() {
     try { localStorage.setItem('insp_cache', JSON.stringify(DATA)); } catch (e) {}
     render();
   } catch (err) {
-    if (!DATA.length) toast(err.message, 'err');   // 有缓存则不报网络错
+    if (!DATA.length) toast(err.message, 'err');
   }
 }
 
 /* ---------- 事件绑定 ---------- */
 document.getElementById('btnNew').onclick = () => openForm(null);
 document.getElementById('btnSettings').onclick = openSettings;
+document.getElementById('btnBatch').onclick = toggleSelectMode;
+document.getElementById('batchDelete').onclick = batchDelete;
+document.getElementById('batchCancel').onclick = toggleSelectMode;
+document.getElementById('batchAll').onchange = (e) => {
+  const checked = e.target.checked;
+  applyFilters().forEach(d => { if (checked) selectedIds.add(d.id); else selectedIds.delete(d.id); });
+  render();
+  const ball = document.getElementById('batchAll');
+  if (ball) ball.checked = checked;
+};
+document.getElementById('btnMic').onclick = toggleMic;
+document.getElementById('btnPolish').onclick = doPolish;
+document.getElementById('btnGenTitle').onclick = genTitleFromContent;
 bindTokenModal();
 document.getElementById('modalClose').onclick = closeForm;
 document.getElementById('formCancel').onclick = closeForm;
@@ -432,4 +672,5 @@ document.getElementById('f-img-file').onchange = (e) => {
 document.getElementById('modal').onclick = (e) => { if (e.target.id === 'modal') closeForm(); };
 document.getElementById('settings').onclick = (e) => { if (e.target.id === 'settings') closeSettings(); };
 
+initVoice();
 init();
