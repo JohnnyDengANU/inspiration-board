@@ -87,7 +87,8 @@ async function loadData() {
     return JSON.parse(b64decodeUtf8(j.content));
   }
   // 公开只读：raw 链接，无需 Token（满足公开访问）
-  const url = `https://raw.githubusercontent.com/${c.owner}/${c.repo}/${c.branch}/inspirations.json`;
+  // 加 cache-buster (?t) 绕过 CDN 陈旧缓存，保证每次刷新拿到真实最新文件（修复「刷新数量忽多忽少」）
+  const url = `https://raw.githubusercontent.com/${c.owner}/${c.repo}/${c.branch}/inspirations.json?t=${Date.now()}`;
   const r = await fetch(url, { cache: 'no-store' });
   if (r.status === 404) return [];
   if (!r.ok) throw new Error('GitHub 公开读取失败：' + r.status);
@@ -130,6 +131,15 @@ async function getSha(c) {
   if (r.status === 404) return null;
   if (!r.ok) throw new Error('获取 sha 失败：' + r.status);
   return (await r.json()).sha;
+}
+
+// 写操作：基于「远端最新全量」合并后再提交，避免用前端陈旧 DATA 覆盖他人改动导致数据丢失。
+// mergeFn(latest) -> next（在最新全量上应用本次增量）。有 token 时 loadData 走 api(实时)，公开只读走 raw(no-cache)。
+async function pushMerged(mergeFn) {
+  const latest = await loadData();
+  const next = mergeFn(latest);
+  await saveAll(next);
+  return next;
 }
 
 /* ---------- 状态 ---------- */
@@ -315,7 +325,12 @@ async function submitForm(e) {
   render();                              // 乐观更新：立即本地生效，不等网络
   toast(editingId ? '已更新' : '已创建', 'ok');
   try {
-    await saveAll(DATA);                 // 后台静默同步到 GitHub（慢也不卡 UI）
+    // 基于远端最新全量合并后提交，避免用陈旧前端数据覆盖导致丢失他人条目
+    await pushMerged(latest => {
+      const i = latest.findIndex(x => x.id === entry.id);
+      if (i >= 0) latest[i] = entry; else latest.unshift(entry);
+      return latest;
+    });
   } catch (err) {
     toast(err.message, 'err');
   }
@@ -329,7 +344,8 @@ async function removeInsp(id) {
   render();                              // 乐观更新：立即本地移除，不等网络
   toast('已删除', 'ok');
   try {
-    await saveAll(DATA);                 // 后台静默同步到 GitHub（慢也不卡 UI）
+    // 基于远端最新全量移除该 id 后提交（保留他人同时的改动，不丢数据）
+    await pushMerged(latest => latest.filter(x => x.id !== id));
   } catch (err) {
     DATA = backup; render();             // 同步失败则回滚
     toast(err.message, 'err');
@@ -372,13 +388,18 @@ function saveSettings() {
 async function init() {
   const c = cfg();
   document.getElementById('readonlyBanner').classList.toggle('hidden', !(c.mode === 'github' && !c.token));
+  // 先渲染上次成功缓存，保证数量即时、稳定、不闪空/不闪变
+  try {
+    const cached = JSON.parse(localStorage.getItem('insp_cache') || 'null');
+    if (Array.isArray(cached)) { DATA = cached; render(); }
+  } catch (e) {}
   try {
     DATA = await loadData();
+    try { localStorage.setItem('insp_cache', JSON.stringify(DATA)); } catch (e) {}
+    render();
   } catch (err) {
-    DATA = [];
-    toast(err.message, 'err');
+    if (!DATA.length) toast(err.message, 'err');   // 有缓存则不报网络错
   }
-  render();
 }
 
 /* ---------- 事件绑定 ---------- */
