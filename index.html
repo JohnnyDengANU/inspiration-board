@@ -18,6 +18,7 @@
     </div>
     <div class="actions">
       <button id="btnNew" class="btn primary">＋ 新建灵感</button>
+      <button id="btnBatch" class="btn ghost" aria-label="批量管理">☑ 批量</button>
       <button id="btnSettings" class="btn ghost" aria-label="设置">⚙</button>
     </div>
   </header>
@@ -26,6 +27,8 @@
     当前为 <b>公开只读</b> 模式（无需登录即可浏览全部灵感）。创建 / 编辑 / 删除时，会让你输入一次 GitHub Token（仅保存在你本机浏览器，之后自动记住）；也可在
     <b>⚙ 设置</b> 中预先填写完整配置。
   </div>
+
+  <div id="syncBanner" class="banner sync hidden">同步中，请稍候…</div>
 
   <section class="filters">
     <input id="search" class="search" type="search" placeholder="搜索标题 / 内容 / 作者…" />
@@ -52,7 +55,13 @@
           <input id="f-title" type="text" maxlength="120" required placeholder="一句话灵感" />
         </label>
         <label>内容
-          <textarea id="f-content" rows="4" placeholder="展开说说（支持多行）"></textarea>
+          <div class="form-tools">
+            <button type="button" id="btnMic" class="btn small">🎤 语音</button>
+            <button type="button" id="btnPolish" class="btn small">✨ 润色</button>
+            <button type="button" id="btnGenTitle" class="btn small">🏷 生成标题</button>
+            <label class="chk"><input type="checkbox" id="f-autopolish" /> 保存时自动润色</label>
+          </div>
+          <textarea id="f-content" rows="4" placeholder="展开说说（支持多行）；点 🎤 可直接语音输入"></textarea>
         </label>
         <label>图片（可多个：填图片链接，或选择本地图片转 base64）
           <div id="imgList" class="img-list"></div>
@@ -124,7 +133,7 @@
     </div>
   </div>
 
-  <!-- 写入 Token 临时弹窗（删除/编辑/新建时若未填则一键补） -->
+  <!-- 写入 Token 临时弹窗 -->
   <div id="tokenModal" class="modal hidden">
     <div class="modal-card small-card">
       <div class="modal-head">
@@ -141,6 +150,15 @@
         <button id="tokenSave" class="btn primary">保存并继续</button>
       </div>
     </div>
+  </div>
+
+  <!-- 批量操作栏（批量模式下出现） -->
+  <div id="batchBar" class="batch-bar hidden">
+    <label class="chk"><input type="checkbox" id="batchAll" /> 全选</label>
+    <span id="batchCount" class="muted">已选 0 项</span>
+    <div class="spacer"></div>
+    <button id="batchCancel" class="btn ghost">退出</button>
+    <button id="batchDelete" class="btn danger">删除选中</button>
   </div>
 
   <div id="toast" class="toast hidden"></div>
